@@ -1,0 +1,1034 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CivicGuard Command — AI Police Dispatch Dashboard</title>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;500;600;700&family=Share+Tech+Mono&display=swap" rel="stylesheet" />
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            bg: { primary: '#0a0f1e', card: '#111827', panel: '#0f172a' },
+            civic: { red: '#ef4444', amber: '#f59e0b', blue: '#3b82f6', green: '#22c55e', purple: '#8b5cf6', cyan: '#00ffe1' }
+          },
+          fontFamily: {
+            command: ['"Share Tech Mono"', 'monospace'],
+            heading: ['Rajdhani', 'sans-serif'],
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #0a0f1e; font-family: 'Rajdhani', system-ui, sans-serif; color: #f1f5f9; min-height: 100vh; }
+    body::before {
+      content: ''; position: fixed; inset: 0; pointer-events: none; z-index: 0;
+      background:
+        radial-gradient(ellipse 120% 60% at 50% 0%, rgba(139,92,246,0.06) 0%, transparent 60%),
+        radial-gradient(ellipse 80% 40% at 20% 50%, rgba(59,130,246,0.04) 0%, transparent 50%),
+        radial-gradient(ellipse 80% 40% at 80% 80%, rgba(239,68,68,0.03) 0%, transparent 50%);
+    }
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.2); }
+
+    @keyframes scoreFill { from { width: 0%; } }
+    @keyframes pulseGlow { 0%, 100% { box-shadow: 0 0 0 0 rgba(245,158,11,0.3); } 50% { box-shadow: 0 0 20px 4px rgba(245,158,11,0.15); } }
+    @keyframes slideIn { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: translateY(0); } }
+    @keyframes flashNew { 0% { background: rgba(34,197,94,0.2); } 100% { background: transparent; } }
+    @keyframes livePulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+    @keyframes briefingIn { from { opacity: 0; transform: translateY(30px); } to { opacity: 1; transform: translateY(0); } }
+    @keyframes toastIn { from { opacity: 0; transform: translateX(100px); } to { opacity: 1; transform: translateX(0); } }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @keyframes shimmer { 0% { background-position: -200% 0; } 100% { background-position: 200% 0; } }
+    @keyframes fadeOut { from { opacity: 1; } to { opacity: 0; } }
+
+    .score-fill { animation: scoreFill 1s ease-out forwards; }
+    .pulse-border { animation: pulseGlow 2s ease-in-out infinite; }
+    .card-enter { animation: slideIn 0.4s ease-out forwards; }
+    .flash-new { animation: flashNew 3s ease-out forwards; }
+    .live-dot { animation: livePulse 1.5s ease-in-out infinite; }
+    .briefing-enter { animation: briefingIn 0.5s ease-out forwards; }
+    .toast-enter { animation: toastIn 0.4s ease-out forwards; }
+    .spinner { animation: spin 1s linear infinite; }
+    .skeleton {
+      background: linear-gradient(90deg, #1e293b 25%, #334155 50%, #1e293b 75%);
+      background-size: 200% 100%;
+      animation: shimmer 1.5s infinite;
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel" data-type="module">
+    const { useState, useEffect, useMemo, useCallback, useRef } = React;
+
+    /* ═══════════════════════════════════════════════════════════
+       CONFIGURATION
+    ═══════════════════════════════════════════════════════════ */
+    const ANTHROPIC_API_KEY = ''; // Add your key for live AI scoring
+    const MONTGOMERY_API = 'https://data.montgomerycountymd.gov/resource/98cc-bc7d.json';
+
+    const INCIDENT_TYPES = [
+      'Noise Complaint', 'Assault / Fight', 'Suspicious Person / Vehicle',
+      'Theft / Burglary', 'Vandalism', 'Traffic Incident', 'Domestic Disturbance',
+      'Welfare Check', 'Drug Activity', 'Trespassing', 'Public Disturbance',
+      'Road / Infrastructure Issue', 'Other'
+    ];
+
+    const ESCALATION_ORDER = [
+      'Noise Complaint', 'Public Disturbance', 'Suspicious Person / Vehicle',
+      'Domestic Disturbance', 'Assault / Fight', 'Drug Activity'
+    ];
+
+    /* ═══════════════════════════════════════════════════════════
+       UTILITY FUNCTIONS
+    ═══════════════════════════════════════════════════════════ */
+    function timeAgo(dateStr) {
+      const diff = Date.now() - new Date(dateStr).getTime();
+      const mins = Math.floor(diff / 60000);
+      if (mins < 1) return 'just now';
+      if (mins < 60) return `${mins} min ago`;
+      const hrs = Math.floor(mins / 60);
+      if (hrs < 24) return `${hrs}h ago`;
+      return `${Math.floor(hrs / 24)}d ago`;
+    }
+
+    function generateId() {
+      return 'INC-' + String(Math.floor(Math.random() * 9000) + 1000);
+    }
+
+    function getScoreColor(score) {
+      if (score >= 75) return { bg: '#ef4444', label: 'Critical', class: 'bg-red-500' };
+      if (score >= 50) return { bg: '#f59e0b', label: 'Elevated', class: 'bg-amber-500' };
+      if (score >= 25) return { bg: '#3b82f6', label: 'Monitor', class: 'bg-blue-500' };
+      return { bg: '#6b7280', label: 'Low', class: 'bg-gray-500' };
+    }
+
+    function getScoreBorder(score) {
+      if (score >= 75) return 'border-l-4 border-l-red-500';
+      if (score >= 50) return 'border-l-4 border-l-amber-500';
+      if (score >= 25) return 'border-l-4 border-l-blue-500';
+      return 'border-l-4 border-l-gray-600';
+    }
+
+    /* ═══════════════════════════════════════════════════════════
+       DISTURBANCE DETECTION
+    ═══════════════════════════════════════════════════════════ */
+    function checkDisturbance(newIncident, allIncidents) {
+      const nearby = allIncidents.filter(inc => {
+        if (inc.id === newIncident.id) return false;
+        if (inc.status === 'resolved') return false;
+        if (!inc.lat || !inc.lng || !newIncident.lat || !newIncident.lng) {
+          // Fallback: string match on location
+          const loc1 = (inc.location || '').toLowerCase();
+          const loc2 = (newIncident.location || '').toLowerCase();
+          const words1 = loc1.split(/[\s,&]+/).filter(w => w.length > 2);
+          const words2 = loc2.split(/[\s,&]+/).filter(w => w.length > 2);
+          return words1.some(w => words2.includes(w));
+        }
+        const latDiff = Math.abs(inc.lat - newIncident.lat);
+        const lngDiff = Math.abs(inc.lng - newIncident.lng);
+        return latDiff < 0.008 && lngDiff < 0.008;
+      });
+      return nearby.length >= 1;
+    }
+
+    function checkEscalation(incident, allIncidents) {
+      const nearby = allIncidents.filter(inc => {
+        if (inc.id === incident.id || inc.status === 'resolved') return false;
+        if (!inc.lat || !inc.lng || !incident.lat || !incident.lng) return false;
+        return Math.abs(inc.lat - incident.lat) < 0.008 && Math.abs(inc.lng - incident.lng) < 0.008;
+      });
+      if (nearby.length < 1) return false;
+      const cluster = [incident, ...nearby];
+      const typeIndices = cluster.map(i => ESCALATION_ORDER.indexOf(i.type)).filter(i => i >= 0);
+      if (typeIndices.length < 2) return false;
+      return Math.max(...typeIndices) - Math.min(...typeIndices) >= 2;
+    }
+
+    function detectDisturbances(incidents) {
+      return incidents.map(inc => {
+        const isDisturbance = checkDisturbance(inc, incidents);
+        const isEscalating = isDisturbance ? checkEscalation(inc, incidents) : false;
+        let adjustedScore = inc.score;
+        if (isDisturbance && adjustedScore !== null) {
+          adjustedScore = Math.min(100, adjustedScore + 20);
+          if (isEscalating) adjustedScore = Math.min(100, adjustedScore + 10);
+        }
+        return { ...inc, disturbance: isDisturbance, escalating: isEscalating, score: adjustedScore };
+      });
+    }
+
+    /* ═══════════════════════════════════════════════════════════
+       AI API CALLS
+    ═══════════════════════════════════════════════════════════ */
+    async function scoreIncidentWithAI(incident) {
+      if (!ANTHROPIC_API_KEY) {
+        // Mock scoring when no API key
+        const typeScores = {
+          'Assault / Fight': 85, 'Domestic Disturbance': 72, 'Drug Activity': 68,
+          'Suspicious Person / Vehicle': 55, 'Welfare Check': 60, 'Theft / Burglary': 58,
+          'Public Disturbance': 45, 'Trespassing': 35, 'Vandalism': 38,
+          'Noise Complaint': 22, 'Traffic Incident': 48, 'Road / Infrastructure Issue': 15,
+          'Other': 30
+        };
+        const base = typeScores[incident.type] || 40;
+        const jitter = Math.floor(Math.random() * 16) - 8;
+        const score = Math.max(0, Math.min(100, base + jitter));
+        const labels = { 75: 'Critical', 50: 'Elevated', 25: 'Monitor', 0: 'Low' };
+        const label = score >= 75 ? 'Critical' : score >= 50 ? 'Elevated' : score >= 25 ? 'Monitor' : 'Low';
+        await new Promise(r => setTimeout(r, 800 + Math.random() * 1200));
+        return { score, priority_label: label, score_reason: `AI scored based on ${incident.type.toLowerCase()} severity and context` };
+      }
+
+      try {
+        const res = await fetch('https://api.anthropic.com/v1/messages', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': ANTHROPIC_API_KEY,
+            'anthropic-version': '2023-06-01',
+            'anthropic-dangerous-direct-browser-access': 'true'
+          },
+          body: JSON.stringify({
+            model: 'claude-sonnet-4-20250514',
+            max_tokens: 300,
+            system: `You are an AI incident scoring system for a police dispatch center in Montgomery, Alabama. Score incoming incidents on a scale of 0-100 for dispatch priority.\n\nScore based on:\n- Incident type severity (30%): violent crimes highest, infrastructure lowest\n- Urgency signals in description (30%): "injured", "weapon", "unconscious" increase score\n- Location risk (20%): general urban area judgment\n- Time sensitivity (20%): active ongoing incidents score higher\n\nScoring guide:\n- 75-100: Immediate dispatch (assault, active violence, medical emergency)\n- 50-74: Elevated (fights, suspicious activity with risk)\n- 25-49: Monitor (noise, minor vandalism, non-urgent)\n- 0-24: Low (infrastructure, historical reports)\n\nRespond ONLY with valid JSON: {"score": <0-100>, "priority_label": "<Critical|Elevated|Monitor|Low>", "score_reason": "<one sentence max 15 words>"}`,
+            messages: [{
+              role: 'user',
+              content: `Score this incident:\nType: ${incident.type}\nLocation: ${incident.location}\nDescription: ${incident.description}\nSource: ${incident.source}`
+            }]
+          })
+        });
+        const data = await res.json();
+        return JSON.parse(data.content[0].text);
+      } catch (e) {
+        return { score: 50, priority_label: 'Monitor', score_reason: 'Auto-scored (AI unavailable)' };
+      }
+    }
+
+    async function generateBriefing(incident, allIncidents) {
+      const nearby = allIncidents.filter(i => i.id !== incident.id && i.disturbance && i.status !== 'resolved');
+      const disturbanceContext = incident.disturbance
+        ? `This is part of a growing disturbance — ${nearby.length + 1} related incidents in this area recently.${incident.escalating ? ' Situation is escalating in severity.' : ''}`
+        : 'This appears to be an isolated incident with no related nearby reports.';
+
+      if (!ANTHROPIC_API_KEY) {
+        await new Promise(r => setTimeout(r, 1000 + Math.random() * 1500));
+        const briefings = {
+          'Assault / Fight': `Responding to a reported ${incident.type.toLowerCase()} at ${incident.location}. ${incident.disturbance ? 'Multiple related incidents have been reported in this area — approach with heightened awareness and expect a volatile scene.' : 'Situation appears isolated but treat as active.'} Assess for injuries on arrival and secure the immediate area before engaging.`,
+          'Domestic Disturbance': `Responding to a domestic disturbance call at ${incident.location}. ${incident.disturbance ? 'This is part of a pattern of calls from this area — prior incidents suggest escalation.' : 'No prior related calls from this location.'} Approach with caution, separate involved parties immediately, and check for any protective orders on file.`,
+          'Drug Activity': `Suspected drug activity reported at ${incident.location}. ${incident.disturbance ? 'Area has seen increased activity recently with multiple calls.' : 'This is a standalone report.'} Observe before approach, note any vehicles or persons present, and be prepared for potential flight risk.`,
+          'default': `Responding to a ${incident.type.toLowerCase()} call at ${incident.location}. Priority score of ${incident.score}/100 indicates ${incident.score >= 75 ? 'immediate attention required' : 'standard response protocol'}. ${disturbanceContext} Assess the scene and report status upon arrival.`
+        };
+        return briefings[incident.type] || briefings['default'];
+      }
+
+      try {
+        const res = await fetch('https://api.anthropic.com/v1/messages', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': ANTHROPIC_API_KEY,
+            'anthropic-version': '2023-06-01',
+            'anthropic-dangerous-direct-browser-access': 'true'
+          },
+          body: JSON.stringify({
+            model: 'claude-sonnet-4-20250514',
+            max_tokens: 300,
+            system: `You are an AI briefing assistant for police officers in Montgomery, Alabama. Generate a concise 2-4 sentence briefing telling the officer what to expect. Be direct and professional. Mention the incident type, any escalation pattern, and one practical note. Plain text only.`,
+            messages: [{
+              role: 'user',
+              content: `Generate an officer briefing:\n\nIncident: ${incident.type} at ${incident.location}\nDescription: ${incident.description}\nPriority Score: ${incident.score}/100\nPattern context: ${disturbanceContext}`
+            }]
+          })
+        });
+        const data = await res.json();
+        return data.content[0].text;
+      } catch (e) {
+        return 'AI briefing unavailable. Proceed with standard protocol.';
+      }
+    }
+
+    /* ═══════════════════════════════════════════════════════════
+       FETCH LIVE DATA FROM MONTGOMERY COUNTY API
+    ═══════════════════════════════════════════════════════════ */
+    async function fetchLiveIncidents() {
+      try {
+        const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+        const url = `${MONTGOMERY_API}?$where=start_time>'${twoHoursAgo}'&$order=start_time DESC&$limit=30`;
+        const res = await fetch(url);
+        const data = await res.json();
+
+        const incidents = data
+          .filter(r => r.latitude && r.longitude)
+          .map(raw => ({
+            id: raw.incident_id || generateId(),
+            type: raw.initial_type || 'Other',
+            location: (raw.address || 'Unknown') + ', ' + (raw.city || 'Montgomery County'),
+            lat: parseFloat(raw.latitude),
+            lng: parseFloat(raw.longitude),
+            description: `${raw.initial_type || 'Incident'} reported in sector ${raw.sector || 'unknown'}. Priority level: ${raw.priority || 'standard'}.`,
+            caller: '911 Dispatch',
+            source: '911',
+            time: timeAgo(raw.start_time),
+            rawTime: raw.start_time,
+            score: null,
+            status: raw.end_time ? 'resolved' : 'queued',
+            disturbance: false,
+            escalating: false,
+            priority: raw.priority,
+            sector: raw.sector,
+            district: raw.police_district_number,
+            isNew: false,
+            scoreReason: null,
+            priorityLabel: null
+          }));
+
+        return incidents;
+      } catch (e) {
+        console.warn('Live API unavailable, using seed data:', e);
+        return null;
+      }
+    }
+
+    /* ═══════════════════════════════════════════════════════════
+       SEED DATA (FALLBACK)
+    ═══════════════════════════════════════════════════════════ */
+    const SEED_INCIDENTS = [
+      {
+        id: 'INC-001', type: 'Noise Complaint', location: 'Oak Street & 5th Ave, Montgomery',
+        lat: 32.3792, lng: -86.3077, description: 'Loud music and shouting from a house party. Multiple neighbors have called.',
+        caller: 'Jane Mitchell', source: '311', time: '18 min ago', score: 28,
+        status: 'queued', disturbance: false, escalating: false, isNew: false,
+        scoreReason: 'Non-violent noise complaint, low urgency', priorityLabel: 'Monitor'
+      },
+      {
+        id: 'INC-002', type: 'Public Disturbance', location: 'Oak Street & 6th Ave, Montgomery',
+        lat: 32.3795, lng: -86.3080, description: 'Group of 8-10 people arguing loudly, spilling into the street. Traffic blocked.',
+        caller: 'Store Owner', source: '911', time: '12 min ago', score: 52,
+        status: 'queued', disturbance: true, escalating: false, isNew: false,
+        scoreReason: 'Active group disturbance blocking traffic', priorityLabel: 'Elevated'
+      },
+      {
+        id: 'INC-003', type: 'Assault / Fight', location: 'Oak Street & 5th Ave, Montgomery',
+        lat: 32.3793, lng: -86.3078, description: 'Man down, possible assault, caller reports victim is bleeding. Suspect still on scene.',
+        caller: 'Anonymous 911', source: '911', time: '2 min ago', score: 94,
+        status: 'queued', disturbance: true, escalating: true, isNew: false,
+        scoreReason: 'Active assault with injury, suspect present', priorityLabel: 'Critical'
+      },
+      {
+        id: 'INC-004', type: 'Suspicious Person / Vehicle', location: 'Dexter Ave & Hull St, Montgomery',
+        lat: 32.3773, lng: -86.3004, description: 'White sedan circling the block repeatedly for 30 minutes. Driver appears to be watching a residence.',
+        caller: 'Robert Chen', source: '911', time: '25 min ago', score: 48,
+        status: 'queued', disturbance: false, escalating: false, isNew: false,
+        scoreReason: 'Surveillance behavior noted but no direct threat', priorityLabel: 'Monitor'
+      },
+      {
+        id: 'INC-005', type: 'Welfare Check', location: '1200 Bell St, Montgomery',
+        lat: 32.3688, lng: -86.2995, description: 'Elderly resident not seen in 3 days. Mail piling up. Neighbor concerned.',
+        caller: 'Mary Thompson', source: '311', time: '40 min ago', score: 62,
+        status: 'queued', disturbance: false, escalating: false, isNew: false,
+        scoreReason: 'Elderly welfare concern with extended absence', priorityLabel: 'Elevated'
+      },
+      {
+        id: 'INC-006', type: 'Road / Infrastructure Issue', location: 'I-65 & Herron St Exit, Montgomery',
+        lat: 32.3611, lng: -86.3121, description: 'Large pothole on exit ramp causing vehicles to swerve. Near-miss accident reported.',
+        caller: 'Commuter', source: '311', time: '1h ago', score: 18,
+        status: 'queued', disturbance: false, escalating: false, isNew: false,
+        scoreReason: 'Infrastructure issue, city dept referral', priorityLabel: 'Low'
+      }
+    ];
+
+    /* ═══════════════════════════════════════════════════════════
+       COMPONENTS
+    ═══════════════════════════════════════════════════════════ */
+
+    /* ── Spinner Icon ── */
+    function Spinner({ size = 16, color = 'white' }) {
+      return (
+        <svg className="spinner inline-block" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.5">
+          <path d="M12 2a10 10 0 0 1 10 10" strokeLinecap="round" />
+        </svg>
+      );
+    }
+
+    /* ── Toast Notification ── */
+    function Toast({ message, type = 'warning', onClose }) {
+      useEffect(() => {
+        const t = setTimeout(onClose, 6000);
+        return () => clearTimeout(t);
+      }, [onClose]);
+
+      const colors = {
+        warning: 'border-amber-500/50 bg-amber-500/10',
+        success: 'border-green-500/50 bg-green-500/10',
+        error: 'border-red-500/50 bg-red-500/10'
+      };
+
+      return (
+        <div className={`toast-enter fixed top-20 right-6 z-50 max-w-md border rounded-xl px-5 py-4 backdrop-blur-md shadow-2xl ${colors[type]}`}>
+          <div className="flex items-start gap-3">
+            <span className="text-xl mt-0.5">{type === 'warning' ? '⚠️' : type === 'success' ? '✅' : '❌'}</span>
+            <div className="flex-1">
+              <p className="text-sm font-semibold text-white/90">{message}</p>
+            </div>
+            <button onClick={onClose} className="text-white/40 hover:text-white/80 text-lg leading-none ml-2">✕</button>
+          </div>
+        </div>
+      );
+    }
+
+    /* ── Stats Bar ── */
+    function StatsBar({ stats, isLive }) {
+      const statItems = [
+        { label: 'Total', value: stats.total, color: 'text-white' },
+        { label: 'Critical (75+)', value: stats.critical, color: 'text-red-400' },
+        { label: 'Elevated (50-74)', value: stats.elevated, color: 'text-amber-400' },
+        { label: 'Disturbances', value: stats.disturbances, color: 'text-orange-400' },
+        { label: 'Dispatched', value: stats.dispatched, color: 'text-green-400' },
+      ];
+
+      return (
+        <header className="relative z-10">
+          {/* Top Bar */}
+          <div className="flex items-center justify-between px-6 py-4 border-b border-white/[0.06]">
+            <div className="flex items-center gap-4">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-lg bg-purple-600/20 border border-purple-500/30 flex items-center justify-center">
+                  <span className="text-lg">🛡️</span>
+                </div>
+                <div>
+                  <h1 className="font-command text-sm tracking-[3px] text-white/90 uppercase font-bold">CivicGuard Command</h1>
+                  <p className="font-command text-[9px] tracking-[2px] text-white/30 uppercase">AI Police Dispatch Intelligence</p>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-3">
+              {isLive && (
+                <div className="flex items-center gap-2 bg-green-500/10 border border-green-500/30 rounded-full px-3 py-1">
+                  <div className="w-2 h-2 rounded-full bg-green-400 live-dot"></div>
+                  <span className="font-command text-[10px] tracking-[2px] text-green-400 uppercase">Live</span>
+                </div>
+              )}
+              <div className="font-command text-[10px] text-white/30 tracking-wider">
+                {new Date().toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })} &middot; {new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}
+              </div>
+            </div>
+          </div>
+
+          {/* Stats Row */}
+          <div className="flex items-center justify-center gap-1 px-6 py-2.5 bg-white/[0.02] border-b border-white/[0.06]">
+            {statItems.map((stat, i) => (
+              <React.Fragment key={stat.label}>
+                <div className="flex items-center gap-2 px-4">
+                  <span className={`font-command text-lg font-bold ${stat.color}`}>{stat.value}</span>
+                  <span className="font-command text-[9px] tracking-[1px] text-white/40 uppercase">{stat.label}</span>
+                </div>
+                {i < statItems.length - 1 && <div className="w-px h-5 bg-white/[0.08]"></div>}
+              </React.Fragment>
+            ))}
+          </div>
+        </header>
+      );
+    }
+
+    /* ── Intake Form ── */
+    function IntakePanel({ onSubmit, isScoring }) {
+      const [form, setForm] = useState({ caller: '', source: '911', type: '', location: '', description: '' });
+      const [errors, setErrors] = useState({});
+
+      const handleChange = (field, value) => {
+        setForm(prev => ({ ...prev, [field]: value }));
+        if (errors[field]) setErrors(prev => ({ ...prev, [field]: null }));
+      };
+
+      const handleSubmit = () => {
+        const newErrors = {};
+        if (!form.caller.trim()) newErrors.caller = 'Required';
+        if (!form.type) newErrors.type = 'Required';
+        if (!form.location.trim()) newErrors.location = 'Required';
+        if (!form.description.trim()) newErrors.description = 'Required';
+
+        if (Object.keys(newErrors).length > 0) {
+          setErrors(newErrors);
+          return;
+        }
+
+        onSubmit(form);
+        setForm({ caller: '', source: '911', type: '', location: '', description: '' });
+        setErrors({});
+      };
+
+      const inputClass = (field) =>
+        `w-full bg-white/[0.04] border ${errors[field] ? 'border-red-500/60' : 'border-white/[0.08]'} rounded-lg px-3 py-2.5 text-sm text-white/90 placeholder-white/20 focus:outline-none focus:border-purple-500/50 focus:bg-white/[0.06] transition-all font-heading`;
+
+      return (
+        <div className="w-80 flex-shrink-0 border-r border-white/[0.06] bg-white/[0.01] flex flex-col">
+          {/* Panel Header */}
+          <div className="px-5 py-4 border-b border-white/[0.06]">
+            <div className="flex items-center gap-2 mb-1">
+              <span className="text-base">📞</span>
+              <h2 className="font-command text-xs tracking-[2px] text-white/70 uppercase font-bold">Incident Intake</h2>
+            </div>
+            <p className="font-command text-[9px] text-white/30 tracking-wider">911 / 311 / Field Report Entry</p>
+          </div>
+
+          {/* Form */}
+          <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
+            {/* Caller Name */}
+            <div>
+              <label className="block font-command text-[10px] tracking-[1.5px] text-white/40 uppercase mb-1.5">Caller Name</label>
+              <input
+                type="text" placeholder="Caller name"
+                value={form.caller} onChange={e => handleChange('caller', e.target.value)}
+                className={inputClass('caller')} disabled={isScoring}
+              />
+              {errors.caller && <span className="font-command text-[9px] text-red-400 mt-1 block">{errors.caller}</span>}
+            </div>
+
+            {/* Source */}
+            <div>
+              <label className="block font-command text-[10px] tracking-[1.5px] text-white/40 uppercase mb-1.5">Source</label>
+              <select
+                value={form.source} onChange={e => handleChange('source', e.target.value)}
+                className={inputClass('source')} disabled={isScoring}
+              >
+                <option value="911">911</option>
+                <option value="311">311</option>
+                <option value="Field Officer">Field Officer</option>
+              </select>
+            </div>
+
+            {/* Incident Type */}
+            <div>
+              <label className="block font-command text-[10px] tracking-[1.5px] text-white/40 uppercase mb-1.5">Incident Type</label>
+              <select
+                value={form.type} onChange={e => handleChange('type', e.target.value)}
+                className={inputClass('type')} disabled={isScoring}
+              >
+                <option value="">Select type...</option>
+                {INCIDENT_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+              </select>
+              {errors.type && <span className="font-command text-[9px] text-red-400 mt-1 block">{errors.type}</span>}
+            </div>
+
+            {/* Location */}
+            <div>
+              <label className="block font-command text-[10px] tracking-[1.5px] text-white/40 uppercase mb-1.5">Location</label>
+              <input
+                type="text" placeholder="Oak St & 5th Ave, Montgomery AL"
+                value={form.location} onChange={e => handleChange('location', e.target.value)}
+                className={inputClass('location')} disabled={isScoring}
+              />
+              {errors.location && <span className="font-command text-[9px] text-red-400 mt-1 block">{errors.location}</span>}
+            </div>
+
+            {/* Description */}
+            <div>
+              <label className="block font-command text-[10px] tracking-[1.5px] text-white/40 uppercase mb-1.5">Description</label>
+              <textarea
+                rows="3" placeholder="Describe what was reported..."
+                value={form.description} onChange={e => handleChange('description', e.target.value)}
+                className={`${inputClass('description')} resize-none`} disabled={isScoring}
+              />
+              {errors.description && <span className="font-command text-[9px] text-red-400 mt-1 block">{errors.description}</span>}
+            </div>
+          </div>
+
+          {/* Submit Button */}
+          <div className="px-5 py-4 border-t border-white/[0.06]">
+            <button
+              onClick={handleSubmit} disabled={isScoring}
+              className={`w-full py-3 rounded-xl font-command text-xs tracking-[2px] uppercase font-bold transition-all flex items-center justify-center gap-2.5 ${
+                isScoring
+                  ? 'bg-purple-900/30 text-purple-300/50 cursor-not-allowed border border-purple-500/20'
+                  : 'bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-500 hover:to-blue-500 text-white shadow-lg shadow-purple-500/20 hover:shadow-purple-500/30 active:scale-[0.98]'
+              }`}
+            >
+              {isScoring ? (
+                <><Spinner size={14} color="#a78bfa" /> Scoring...</>
+              ) : (
+                <>Submit & Score with AI →</>
+              )}
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    /* ── Score Bar ── */
+    function ScoreBar({ score, dimmed }) {
+      const { bg, label } = getScoreColor(score);
+      return (
+        <div className={`mt-3 ${dimmed ? 'opacity-50' : ''}`}>
+          <div className="flex items-center justify-between mb-1.5">
+            <span className="font-command text-[9px] tracking-[1.5px] text-white/40 uppercase">AI Priority Score</span>
+            <div className="flex items-center gap-2">
+              <span className="font-command text-lg font-bold" style={{ color: bg }}>{score}</span>
+              <span className="font-command text-[10px] text-white/30">/100</span>
+            </div>
+          </div>
+          <div className="h-2 bg-white/[0.06] rounded-full overflow-hidden">
+            <div
+              className="h-full rounded-full score-fill transition-all"
+              style={{ width: `${score}%`, background: `linear-gradient(90deg, ${bg}88, ${bg})` }}
+            ></div>
+          </div>
+          <div className="mt-1">
+            <span className="font-command text-[9px] px-2 py-0.5 rounded-full uppercase tracking-wider"
+              style={{ background: `${bg}18`, color: bg, border: `1px solid ${bg}30` }}>
+              {label}
+            </span>
+          </div>
+        </div>
+      );
+    }
+
+    /* ── Incident Card ── */
+    function IncidentCard({ incident, onDispatch, isDispatching }) {
+      const isDimmed = incident.status === 'dispatched' || incident.status === 'resolved';
+      const showDispatch = incident.score >= 65 && incident.status === 'queued';
+
+      const statusBadge = {
+        queued: { text: 'Queued', bg: 'bg-gray-500/10 text-gray-400 border-gray-500/20' },
+        dispatched: { text: 'Dispatched', bg: 'bg-green-500/10 text-green-400 border-green-500/20' },
+        resolved: { text: 'Resolved', bg: 'bg-white/5 text-white/30 border-white/10' }
+      };
+
+      const status = statusBadge[incident.status] || statusBadge.queued;
+      const borderClass = incident.status === 'resolved' ? 'border-l-4 border-l-gray-700' : getScoreBorder(incident.score || 0);
+
+      return (
+        <div
+          className={`card-enter rounded-xl bg-bg-card border border-white/[0.06] overflow-hidden transition-all duration-300 ${borderClass} ${
+            isDimmed ? 'opacity-50' : ''
+          } ${incident.disturbance && !isDimmed ? 'pulse-border' : ''} ${incident.isNew ? 'flash-new' : ''}`}
+        >
+          <div className="p-4">
+            {/* Card Header */}
+            <div className="flex items-start justify-between mb-2">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-base">
+                  {incident.score >= 75 ? '🔴' : incident.score >= 50 ? '🟡' : incident.score >= 25 ? '🔵' : '⚪'}
+                </span>
+                <span className="font-command text-[11px] tracking-wider text-white/60">{incident.id}</span>
+                <span className="font-command text-[9px] tracking-[1px] px-2 py-0.5 rounded-md bg-white/[0.06] border border-white/[0.08] text-white/50 uppercase">
+                  {incident.type}
+                </span>
+              </div>
+              <div className="flex items-center gap-2 flex-shrink-0">
+                {incident.escalating && (
+                  <span className="font-command text-[8px] tracking-[1px] px-2 py-0.5 rounded-md bg-red-500/15 border border-red-500/30 text-red-400 uppercase whitespace-nowrap">
+                    🔴 Escalating
+                  </span>
+                )}
+                {incident.disturbance && !incident.escalating && (
+                  <span className="font-command text-[8px] tracking-[1px] px-2 py-0.5 rounded-md bg-amber-500/15 border border-amber-500/30 text-amber-400 uppercase whitespace-nowrap">
+                    ⚠️ Growing Disturbance
+                  </span>
+                )}
+                <span className={`font-command text-[8px] tracking-[1px] px-2 py-0.5 rounded-md border ${status.bg} uppercase`}>
+                  {status.text}
+                </span>
+              </div>
+            </div>
+
+            {/* Location / Meta */}
+            <div className="flex items-center gap-2 text-white/40 mb-2 flex-wrap">
+              <span className="text-[11px] font-heading">{incident.location}</span>
+              <span className="text-white/20">·</span>
+              <span className="font-command text-[10px]">{incident.source}</span>
+              <span className="text-white/20">·</span>
+              <span className="font-command text-[10px]">{incident.time}</span>
+            </div>
+
+            {/* Description */}
+            <p className="text-sm text-white/50 font-heading leading-relaxed mb-1 italic">
+              "{incident.description}"
+            </p>
+
+            {/* Score Reason */}
+            {incident.scoreReason && (
+              <p className="font-command text-[9px] text-white/30 mt-1 tracking-wider">
+                AI: {incident.scoreReason}
+              </p>
+            )}
+
+            {/* Score Bar */}
+            {incident.score !== null && <ScoreBar score={incident.score} dimmed={isDimmed} />}
+            {incident.score === null && (
+              <div className="mt-3 h-2 skeleton rounded-full"></div>
+            )}
+
+            {/* Dispatch Button */}
+            {showDispatch && (
+              <button
+                onClick={() => onDispatch(incident)}
+                disabled={isDispatching}
+                className="mt-4 w-full py-2.5 rounded-lg font-command text-[11px] tracking-[2px] uppercase bg-gradient-to-r from-red-600/80 to-red-500/80 hover:from-red-500 hover:to-red-400 text-white border border-red-500/30 transition-all hover:shadow-lg hover:shadow-red-500/20 active:scale-[0.98] flex items-center justify-center gap-2"
+              >
+                {isDispatching ? <><Spinner size={12} /> Dispatching...</> : <>🚔 Dispatch Officer →</>}
+              </button>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    /* ── Incident Queue ── */
+    function IncidentQueue({ incidents, onDispatch, dispatchingId }) {
+      const sortedIncidents = useMemo(() => {
+        const active = incidents.filter(i => i.status === 'queued');
+        const dispatched = incidents.filter(i => i.status === 'dispatched');
+        const resolved = incidents.filter(i => i.status === 'resolved');
+
+        active.sort((a, b) => (b.score || 0) - (a.score || 0));
+        return [...active, ...dispatched, ...resolved];
+      }, [incidents]);
+
+      return (
+        <div className="flex-1 flex flex-col min-w-0">
+          {/* Queue Header */}
+          <div className="px-5 py-4 border-b border-white/[0.06] flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <span className="text-base">📋</span>
+              <h2 className="font-command text-xs tracking-[2px] text-white/70 uppercase font-bold">Incident Queue</h2>
+              <span className="font-command text-[10px] px-2 py-0.5 rounded-full bg-white/[0.06] border border-white/[0.08] text-white/40">
+                {incidents.filter(i => i.status === 'queued').length} active
+              </span>
+            </div>
+            <div className="font-command text-[9px] text-white/30 tracking-wider uppercase">Sorted by Priority Score</div>
+          </div>
+
+          {/* Queue Cards */}
+          <div className="flex-1 overflow-y-auto px-5 py-4">
+            {sortedIncidents.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-20 text-center">
+                <span className="text-4xl mb-4">✅</span>
+                <p className="font-command text-sm text-white/40 tracking-wider">No Active Incidents</p>
+                <p className="font-command text-[10px] text-white/20 tracking-wider mt-1">All incidents have been resolved</p>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {sortedIncidents.map(inc => (
+                  <IncidentCard
+                    key={inc.id}
+                    incident={inc}
+                    onDispatch={onDispatch}
+                    isDispatching={dispatchingId === inc.id}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    /* ── Officer Briefing Card ── */
+    function BriefingCard({ incident, briefingText, isBriefing, onClose, onResolve }) {
+      if (!incident) return null;
+
+      const { bg, label } = getScoreColor(incident.score);
+
+      return (
+        <div className="briefing-enter border-t-2 border-purple-500/40 bg-bg-panel">
+          <div className="max-w-full px-6 py-5">
+            {/* Briefing Header */}
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-3">
+                <span className="text-xl">🚔</span>
+                <div>
+                  <h3 className="font-command text-xs tracking-[2px] text-purple-400 uppercase font-bold">
+                    Officer Briefing — {incident.id}
+                  </h3>
+                  <p className="font-command text-[9px] text-white/30 tracking-wider mt-0.5">
+                    Dispatched {new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <button onClick={onResolve}
+                  className="font-command text-[10px] tracking-[1.5px] uppercase px-4 py-2 rounded-lg bg-green-500/10 border border-green-500/30 text-green-400 hover:bg-green-500/20 transition-all flex items-center gap-1.5">
+                  ✓ Mark Resolved
+                </button>
+                <button onClick={onClose}
+                  className="font-command text-[10px] tracking-[1.5px] uppercase px-4 py-2 rounded-lg bg-white/[0.04] border border-white/[0.08] text-white/40 hover:text-white/70 hover:bg-white/[0.08] transition-all">
+                  ✕ Close
+                </button>
+              </div>
+            </div>
+
+            {/* AI Briefing Text */}
+            <div className="bg-purple-500/[0.06] border border-purple-500/20 rounded-xl px-5 py-4 mb-4">
+              {isBriefing ? (
+                <div className="space-y-2">
+                  <div className="h-4 skeleton rounded w-3/4"></div>
+                  <div className="h-4 skeleton rounded w-full"></div>
+                  <div className="h-4 skeleton rounded w-5/6"></div>
+                  <p className="font-command text-[10px] text-purple-400/50 tracking-wider mt-2">Generating briefing...</p>
+                </div>
+              ) : (
+                <p className="text-sm text-white/80 font-heading leading-relaxed">{briefingText}</p>
+              )}
+            </div>
+
+            {/* Incident Details */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <div className="bg-white/[0.03] rounded-lg px-3 py-2.5 border border-white/[0.06]">
+                <span className="font-command text-[8px] text-white/30 tracking-[1.5px] uppercase block mb-1">Incident Type</span>
+                <span className="font-heading text-sm text-white/80">{incident.type}</span>
+              </div>
+              <div className="bg-white/[0.03] rounded-lg px-3 py-2.5 border border-white/[0.06]">
+                <span className="font-command text-[8px] text-white/30 tracking-[1.5px] uppercase block mb-1">Location</span>
+                <span className="font-heading text-sm text-white/80">{incident.location}</span>
+              </div>
+              <div className="bg-white/[0.03] rounded-lg px-3 py-2.5 border border-white/[0.06]">
+                <span className="font-command text-[8px] text-white/30 tracking-[1.5px] uppercase block mb-1">Priority Score</span>
+                <span className="font-heading text-sm font-bold" style={{ color: bg }}>{incident.score}/100 — {label}</span>
+              </div>
+              <div className="bg-white/[0.03] rounded-lg px-3 py-2.5 border border-white/[0.06]">
+                <span className="font-command text-[8px] text-white/30 tracking-[1.5px] uppercase block mb-1">Pattern</span>
+                <span className="font-heading text-sm text-white/80">
+                  {incident.escalating ? '🔴 Escalating Disturbance' : incident.disturbance ? '⚠️ Growing Disturbance' : 'Isolated Incident'}
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    /* ═══════════════════════════════════════════════════════════
+       MAIN APP
+    ═══════════════════════════════════════════════════════════ */
+    function App() {
+      const [incidents, setIncidents] = useState([]);
+      const [activeBriefing, setActiveBriefing] = useState(null);
+      const [isScoring, setIsScoring] = useState(false);
+      const [isBriefing, setIsBriefing] = useState(false);
+      const [briefingText, setBriefingText] = useState('');
+      const [dispatchingId, setDispatchingId] = useState(null);
+      const [notification, setNotification] = useState(null);
+      const [isLive, setIsLive] = useState(false);
+      const [isLoading, setIsLoading] = useState(true);
+
+      // Derived stats
+      const stats = useMemo(() => ({
+        total: incidents.length,
+        critical: incidents.filter(i => i.score !== null && i.score >= 75).length,
+        elevated: incidents.filter(i => i.score !== null && i.score >= 50 && i.score < 75).length,
+        disturbances: incidents.filter(i => i.disturbance).length,
+        dispatched: incidents.filter(i => i.status === 'dispatched').length,
+      }), [incidents]);
+
+      // Load data on mount
+      useEffect(() => {
+        async function loadData() {
+          setIsLoading(true);
+          const liveData = await fetchLiveIncidents();
+
+          if (liveData && liveData.length > 0) {
+            setIsLive(true);
+            // Score live incidents in batches
+            const scored = [];
+            for (let i = 0; i < liveData.length; i++) {
+              const inc = liveData[i];
+              if (inc.score === null && inc.status !== 'resolved') {
+                const result = await scoreIncidentWithAI(inc);
+                scored.push({
+                  ...inc,
+                  score: result.score,
+                  priorityLabel: result.priority_label,
+                  scoreReason: result.score_reason
+                });
+              } else {
+                scored.push(inc);
+              }
+              // Update UI after each score
+              setIncidents(detectDisturbances([...scored, ...liveData.slice(i + 1)]));
+            }
+            setIncidents(detectDisturbances(scored));
+          } else {
+            // Use seed data
+            setIncidents(detectDisturbances(SEED_INCIDENTS));
+          }
+          setIsLoading(false);
+        }
+        loadData();
+      }, []);
+
+      // Handle form submission
+      const handleFormSubmit = useCallback(async (formData) => {
+        setIsScoring(true);
+
+        const newIncident = {
+          id: generateId(),
+          type: formData.type,
+          location: formData.location,
+          lat: 32.377 + (Math.random() * 0.02 - 0.01),
+          lng: -86.305 + (Math.random() * 0.02 - 0.01),
+          description: formData.description,
+          caller: formData.caller,
+          source: formData.source,
+          time: 'just now',
+          score: null,
+          status: 'queued',
+          disturbance: false,
+          escalating: false,
+          isNew: true,
+          scoreReason: null,
+          priorityLabel: null
+        };
+
+        // Add to queue immediately (with null score = skeleton)
+        setIncidents(prev => [newIncident, ...prev]);
+
+        try {
+          const result = await scoreIncidentWithAI(newIncident);
+          const scoredIncident = {
+            ...newIncident,
+            score: result.score,
+            priorityLabel: result.priority_label,
+            scoreReason: result.score_reason
+          };
+
+          setIncidents(prev => {
+            const updated = prev.map(i => i.id === newIncident.id ? scoredIncident : i);
+            const withDisturbance = detectDisturbances(updated);
+
+            // Check if new disturbance was detected
+            const thisInc = withDisturbance.find(i => i.id === newIncident.id);
+            if (thisInc && thisInc.disturbance) {
+              const clusterCount = withDisturbance.filter(i => i.disturbance && i.status !== 'resolved').length;
+              setNotification({
+                message: `Growing Disturbance detected — ${clusterCount} related incidents near ${formData.location}`,
+                type: 'warning'
+              });
+            }
+
+            return withDisturbance;
+          });
+
+          // Remove "new" flash after 3 seconds
+          setTimeout(() => {
+            setIncidents(prev => prev.map(i => i.id === newIncident.id ? { ...i, isNew: false } : i));
+          }, 3000);
+        } catch (e) {
+          setIncidents(prev => prev.map(i => i.id === newIncident.id ? {
+            ...i, score: 50, priorityLabel: 'Monitor', scoreReason: 'Auto-scored (AI unavailable)'
+          } : i));
+        }
+
+        setIsScoring(false);
+      }, []);
+
+      // Handle dispatch
+      const handleDispatch = useCallback(async (incident) => {
+        setDispatchingId(incident.id);
+
+        // Update status
+        setIncidents(prev => prev.map(i => i.id === incident.id ? { ...i, status: 'dispatched' } : i));
+
+        // Set briefing panel
+        const dispatchedInc = { ...incident, status: 'dispatched' };
+        setActiveBriefing(dispatchedInc);
+        setIsBriefing(true);
+
+        const text = await generateBriefing(dispatchedInc, incidents);
+        setBriefingText(text);
+        setIsBriefing(false);
+        setDispatchingId(null);
+
+        setNotification({ message: `Officer dispatched to ${incident.id} — ${incident.type}`, type: 'success' });
+      }, [incidents]);
+
+      // Handle resolve
+      const handleResolve = useCallback(() => {
+        if (!activeBriefing) return;
+        setIncidents(prev => {
+          const updated = prev.map(i => i.id === activeBriefing.id ? { ...i, status: 'resolved' } : i);
+          return detectDisturbances(updated);
+        });
+        setActiveBriefing(null);
+        setBriefingText('');
+        setNotification({ message: `${activeBriefing.id} marked as resolved`, type: 'success' });
+      }, [activeBriefing]);
+
+      const handleCloseBriefing = useCallback(() => {
+        setActiveBriefing(null);
+        setBriefingText('');
+      }, []);
+
+      return (
+        <div className="h-screen flex flex-col relative z-10">
+          {/* Toast */}
+          {notification && (
+            <Toast
+              message={notification.message}
+              type={notification.type}
+              onClose={() => setNotification(null)}
+            />
+          )}
+
+          {/* Stats Bar */}
+          <StatsBar stats={stats} isLive={isLive} />
+
+          {/* Loading Overlay */}
+          {isLoading && (
+            <div className="flex-1 flex items-center justify-center">
+              <div className="text-center">
+                <div className="w-12 h-12 border-2 border-purple-500/30 border-t-purple-500 rounded-full spinner mx-auto mb-4"></div>
+                <p className="font-command text-sm text-white/50 tracking-wider">Loading Incident Data...</p>
+                <p className="font-command text-[10px] text-white/25 tracking-wider mt-1">Fetching from Montgomery County API</p>
+              </div>
+            </div>
+          )}
+
+          {/* Main Layout */}
+          {!isLoading && (
+            <>
+              <div className="flex-1 flex overflow-hidden">
+                <IntakePanel onSubmit={handleFormSubmit} isScoring={isScoring} />
+                <IncidentQueue
+                  incidents={incidents}
+                  onDispatch={handleDispatch}
+                  dispatchingId={dispatchingId}
+                />
+              </div>
+
+              {/* Briefing Card */}
+              <BriefingCard
+                incident={activeBriefing}
+                briefingText={briefingText}
+                isBriefing={isBriefing}
+                onClose={handleCloseBriefing}
+                onResolve={handleResolve}
+              />
+            </>
+          )}
+        </div>
+      );
+    }
+
+    /* ═══════════════════════════════════════════════════════════
+       RENDER
+    ═══════════════════════════════════════════════════════════ */
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>

@@ -1,0 +1,15 @@
+node_modules/
+.next/
+out/
+.env
+.env.local
+.env.*.local
+.DS_Store
+*.pem
+npm-debug.log*
+.vercel
+
+# Editor and tool-specific directories
+.claude/
+.vscode/
+.idea/
